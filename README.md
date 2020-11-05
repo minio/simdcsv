@@ -1,17 +1,17 @@
 # simdcsv
 
-**Experimental: do not use in production.**
+This is a Golang package for accelerating the parsing of CSV data. It leverages SIMD capabilities for Intel and AMD CPUs (from AVX2 onwards) to speed up the parsing process while detecting and handling the various peculiarities of the CSV data format.
+ 
+It uses a two stage design approach which is somewhat analogous to and inspired by [simdjson-go](https://github.com/minio/simdjson-go).
 
-A 2 stage design approach for speeding up CSV parsing (somewhat analoguous to [simdjson-go](https://github.com/minio/simdjson-go)).
-    
 ## Design goals
 
 - 1 GB/sec parsing performance
 - support arbitrarily large data sets (and beyond 4 GB)
 - drop-in replacement for `encoding/csv`
-- zero copy behaviour/memory efficient
+- zero copy behaviour and memory efficient
 
-## Two Stage Design
+## Two stage design
 
 The design of `simdcsv` consists of two stages:
 - stage 1: preprocess the CSV
@@ -21,11 +21,7 @@ Fundamentally `simdcsv` works on chunks of 64 bytes at a time which are loaded i
 
 ##  Performance compared to encoding/csv
 
-Below is a comparison between `encoding/csv` and `simdcsv` for a couple of popular CSV data sets.
-
-![encoding-csv_vs_simdcsv-comparison](charts/encoding-csv_vs_simdcsv.png)
-
-The detailed benchmarks are as follows (taken on a c5.12xlarge instance with an Intel Cascade Lake CPU on AWS):
+Below is a graph showing a comparison between `encoding/csv` and `simdcsv` for a couple of popular CSV data sets. The detailed benchmarks are as follows (taken on an AWS EC2 `c5.12xlarge` instance with an Intel Cascade Lake CPU):
 
 ```
 benchmark                                  old MB/s     new MB/s     speedup
@@ -34,27 +30,28 @@ BenchmarkCsv/worldcitiespop-100K-48        137.40        563.45      4.10x
 BenchmarkCsv/nyc-taxi-data-100K-48         210.25       1007.57      4.79x
 ```
 
+![encoding-csv_vs_simdcsv-comparison](charts/encoding-csv_vs_simdcsv.png)
 
 ## Stage 1: Preprocessing stage
 
-The main job of the first stage is to a chunk of data for the presence of quoted fields. 
+The main job of the first stage is to scan a chunk of data for the presence of quoted fields. 
 
 Within quoted fields some special processing is done for:
-- double quotes (`""`): these are cleared in the corresponding mask in order to prevent the next step to treat it from being treated as either an opening or closing qoute.
-- separator character: each separator character in a quoted field has its corresponding bit cleared so as to be skipped in the next step.
+- double quotes (`""`): these are cleared in the corresponding mask in order to prevent the second stage from treating it as either an opening or closing qoute.
+- separator character: each separator character in a quoted field has its corresponding bit cleared so as to be ignored in the second stage.
 
-In addition all CVS data is scanned for carriage return characters followed by a newline character (`\r\n`):
-- within quoted fields: the (`\r\n`) pair is marked as a position to be replaced with a single newline (`\n`) only during the next stage.
-- everywhere else: the `\r` is marked to be a newline (`\n`) so that it will be treated as an empty line during the next stage (which are ignored).
+In addition all CVS data is scanned for carriage return characters followed by a newline character (`\r\n` pairs):
+- within quoted fields: the (`\r\n`) pair is marked as a position to be replaced with just a single newline (`\n`) during the second stage.
+- everywhere else: the `\r` is marked to be a newline (`\n`) so that it will be treated as an empty line during the second stage (which are ignored).
 
 In order to be able to detect double quotes and carriage return and newline pairs, for the last bit (63rd) it is necessary to look ahead to the next set of 64 bytes. So the first stage reads one chunk ahead and, upon finishing the current chunk, swaps the next chunk to the current chunk and loads the next set of 64 bytes to process.
 
 Special care is taken to prevent errors such as segmentation violations in order to not (potentially) load beyond the end of the input buffer.
 
 The result from the first stage is a set of three bit-masks:
-- quote mask: mask indicating opening or closing quotes for quoted fields (excluding quote quotes)
-- separator mask: mask for splitsing the row of CSV data into separate fields (excluding separator characters in quoted fields)
-- carriage return mask: mask than indicate which carriage returns to treat as newlines
+- quote mask: mask indicating opening or closing quotes for quoted fields (excluding escaped quotes)
+- separator mask: mask for splitting the row of CSV data into separate fields (excluding separator characters in quoted fields)
+- carriage return mask: mask that indicates which carriage returns to treat as newlines
 
 Detailed benchmarks for stage 1:
 
@@ -66,17 +63,17 @@ BenchmarkStage1Preprocessing/nyc-taxi-data-100K-48                    49        
 
 ## Stage 2: Parsing stage
 
-The second stage takes the (adjusted) bit masks from the first stage in order the work out the offsets of the individual fields into the originating buffer containing the CSV data.
+The second stage takes the (adjusted) bit masks from the first stage in order to work out the offsets of the individual fields into the originating buffer containing the CSV data.
 
-To prevent needlessy copying (and allocating) strings out of buffer of CSV data, there is a single large slice to strings representing all  the columns for all the rows in the CSV data. Each string out of the columns slice points back into the appropriate starting position in the CSV data and the corresponding length for that particular field.
+To prevent needlessy copying (and allocating) strings out of buffer of CSV data, there is a single large slice of strings representing all the columns for all the rows in the CSV data. Each string out of the columns slice points back at the appropriate starting position in the CSV data and has the corresponding length for that particular field.
 
-As the columns are parsed they are added to the same row (which is a slice of strings) until a delimiter in the form of an active bit in the newline mask is detected. The a new row is started to which the subsequent fields are added.
+As the columns are parsed they are added to the same row (which is a slice of strings) until a delimiter in the form of an active bit in the newline mask is detected. Then a new row is started to which the subsequent fields are added.
 
-Note that empty rows are automatically skipped as well as multiple empty rows immediately following each other. Due to the fact that a carriage return character, immediately followed by a newline, is indicated from the first stage to be treated as a newline character, it both properly terminates the current row as well as preventing an empty row from being added (since `\r\n` is treated as two subsequent newlines (`\n\n`) but empty lines are filtered out).
+Note that empty rows (whether subsequent or not) are automatically skipped. A carriage return character, immediately followed by a newline, is indicated from the first stage to be treated as a newline character. As such it properly terminates the current row while not adding an empty row to the parsed results.
 
-For the large majority of the fields we have an optimized "zero-copy" memory optimized representation whereby the field is directly pointing back into the original buffer of CSV data.
+For the vast majority of the fields, there is an optimized "zero-copy" memory representation whereby the field is directly pointing back into the original buffer of CSV data. However there are some fields that require post-processing in order to have the correct representation (and meeting equivalence to how `encoding/csv` operates). 
 
-However there are certain fields that require post-processing in order to have the correct representation (and meeting equivalence to how `encoding/csv` operates. These fields are all quoted fields that contain either a double quote or a carriage return and newline pair. The first stage outputs a rough indication of which fields require this post-processing and, upon completion of the second stage, a final `string.ReplaceAll()` is invoked on these fields (which then will contain a modified copy of the string out of the original CSV data).
+These fields are all quoted fields that contain either a double quote (escaped quote) or a carriage return and newline pair. The first stage outputs a rough indication of which fields require this post-processing and, upon completion of the second stage, a simple `string.ReplaceAll()` is invoked on these fields.
 
 Detailed benchmarks for stage 2:
 
