@@ -85,7 +85,7 @@ BenchmarkStage2/nyc-taxi-data-100K-48                    44          26093220 ns
 
 ## Example
 
-Below is an example that illustrates the bit masks for the different identification characters as well as their interaction between both stages.  
+Below is an example that illustrates the bit masks for the different identification characters as well as their interaction between both stages.
 
 The input data is a modified version of the example from `encoding\csv` with a couple of changes for cases that need proper handling:
  
@@ -103,7 +103,7 @@ Ken,Thompson,ken
 	instr = strings.Replace(instr, `"Griesemer"`, "Gries\remer", 1)     // carriage return in quoted field not followed by newline  --> not treated as newline
 ```
 
-So the input data is as shown below in hexadecimal dump with a mix of carriage return and newline lines along with normally terminated lines. Also one quoted field contains a carriage return and newline pair (which `encoding\csv` filters out to just a newline character) as well as another quoted field that just contains a carriage return character which is copied unchanged to the resulting output.
+So the input data is (as shown below in hexadecimal dump) a mix of carriage return and newline lines along with normally terminated lines. Also one quoted field contains a carriage return and newline pair (which `encoding\csv` filters out to just a newline character) as well as another quoted field that contains just a carriage return character which is copied unchanged to the resulting output.
 
 ```
 === RUN   TestExample
@@ -119,7 +119,7 @@ So the input data is as shown below in hexadecimal dump with a mix of carriage r
 
 The first stage detects the occurrence of quotes, separator, and carriage return characters (whereby the separator character can be specified by the user). Each mask is adjusted accordingly based on the "quoted" status of a field and/or the occurrence of double quotes or carriage return and newline pairs.
 
-Below the input state for each bitmask is shown as well as its (adjusted) output state. For instance, for the test CSV data shown above, the bits for the double quote pair are filtered out for the quote mask and the separator character in the quoted field is cleared for the separator mask.
+Below the input and output states for each bit mask are shown. For instance, for the test CSV data shown above, the bits for the double quote pair are filtered out for the quote mask and the separator character in the quoted field is cleared for the separator mask.
 
 (NB: The `·` (high dot) in the middle is inserted purely for illustrational purposes to make it easier to distinguish between the first and second set of 64 bytes/bits)
 
@@ -136,7 +136,7 @@ Below the input state for each bitmask is shown as well as its (adjusted) output
                                                                                          ^           ^                                           
 ```
 
-The bitmasks for the quotes and the separators are passed directly to the second stage. The delimiter mask is the OR of the  carriage return mask shown above in combination with the mask of newline characters from the original data.
+The bit masks for the quotes and the separators are passed directly to the second stage. The delimiter mask is the OR of the carriage return mask shown above in combination with the mask of newline characters from the original data.
 
 ```
         quotes: 0000000000000000000000000000000100000101000001000000000000000000·0000100000000100000000000010001000000000000000000000000000000000
@@ -153,9 +153,9 @@ Based on the separator, delimiter and quote masks, the second stage works out wh
  
 For the vast majority of fields this immediately yields the desired result, except for quoted fields that contain either escaped quotes (see `Ro""b"` above) or a carriage return and newline pair that should be replaced with a newline character only (see `Rob  ert` above).
 
-As such there is a final (small) postprocessing step that does a `strings.ReplaceAll()` for just the affected fields in order to make this correction. So only for these fields additional memory needs to be allocated and the behaviour is not "zero-copy". In case the CSV does not contain any fields that need this transformation this step is completely skipped (and note that the step is typically only applied to a very small number of fields, so the performance overhead is normally very low).
+As such there is a final (small) postprocessing step that does a `strings.ReplaceAll()` for just the affected fields in order to make this correction. So only for these fields additional memory needs to be allocated and the behaviour is not "zero-copy". In case the CSV does not contain any fields that need this transformation, this step is effectively skipped (and note that the step is typically only applied to a small number of fields, so the performance overhead is normally very low).
 
-The table below shows the adjusted fields that are merge back into the overall results shown above.
+The table below shows the adjusted fields that are merged back into the overall results shown above.
 
 ```
         row[1]:                                 Ro"b                            ·                                                                
@@ -170,7 +170,7 @@ The test code for this example is generated by the function `TestExample()` in `
 
 For the algorithms of both stages, `simdcsv` contains both Golang code as well as assembly (which is semi-autogenerated, see below). 
 
-The main loop for both stages follows the same pattern in the sense that it take several bitmasks as input and figures out in which bitmask the first bit is set. This then indicates that such a character is the first character to be dealt with. The following pseudo code shows the idea:
+The main loop for both stages follows the same pattern in the sense that it take several bitmasks as input and figures out in which bitmask the first bit is set. This then indicates that such a character is the first character to be handled. The following pseudo code shows the idea:
 
 ```go
 	separatorPos := bits.TrailingZeros64(separatorMaskIn)
@@ -200,7 +200,7 @@ The main loop for both stages follows the same pattern in the sense that it take
 	}
 ```
 
-Note that this algorithm would not work correctly if two or more masks would have a bit set in the same position, but since we know that will not be the case it is safe to assume this.
+Note that this algorithm would not work correctly if two or more masks would have a bit set in the same position, but since we know that will never be the case, it is safe to assume this.
 
 In order to get the assembly, we take advantage of the Golang compiler and extract the generated assembly using the `go tool objdump` as follows:
 
