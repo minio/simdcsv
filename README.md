@@ -1,6 +1,8 @@
 # simdcsv
 
-This is a Golang package for accelerating the parsing of CSV data. It leverages SIMD capabilities for Intel and AMD CPUs (from AVX2 onwards) to speed up the parsing process while detecting and handling the various peculiarities of the CSV data format.
+## Introduction
+
+`simdcsv` is a Golang package to accelerate parsing of CSV data. It leverages SIMD capabilities for Intel and AMD CPUs (from AVX2 onwards) to speed up the parsing process while detecting and handling the various peculiarities of the CSV data format.
  
 It uses a two stage design approach which is somewhat analogous to and inspired by [simdjson-go](https://github.com/minio/simdjson-go).
 
@@ -42,34 +44,32 @@ Within quoted fields some special processing is done for:
 
 In addition all CVS data is scanned for carriage return characters followed by a newline character (`\r\n` pairs):
 - within quoted fields: the (`\r\n`) pair is marked as a position to be replaced with just a single newline (`\n`) during the second stage.
-- everywhere else: the `\r` is marked to be a newline (`\n`) so that it will be treated as an empty line during the second stage (which are ignored).
+- everywhere else: the `\r` is marked as a newline (`\n`) so that it will be treated as an empty line during the second stage (which are ignored).
 
-In order to be able to detect double quotes and carriage return and newline pairs, for the last bit (63rd) it is necessary to look ahead to the next set of 64 bytes. So the first stage reads one chunk ahead and, upon finishing the current chunk, swaps the next chunk to the current chunk and loads the next set of 64 bytes to process.
-
-Special care is taken to prevent errors such as segmentation violations in order to not (potentially) load beyond the end of the input buffer.
+In order to be able to detect double quotes and pairs of carriage return and newlines, for the last bit (63rd) it is necessary to look ahead to the next set of 64 bytes. So the first stage reads one chunk ahead and, upon finishing the current chunk, swaps the next chunk to the current chunk and loads the next set of 64 bytes to process.
 
 The result from the first stage is a set of three bit-masks:
 - quote mask: mask indicating opening or closing quotes for quoted fields (excluding escaped quotes)
-- separator mask: mask for splitting the row of CSV data into separate fields (excluding separator characters in quoted fields)
+- separator mask: mask for splitting a row of CSV data into separate fields (excluding separator characters in quoted fields)
 - carriage return mask: mask that indicates which carriage returns to treat as newlines
 
 Detailed benchmarks for stage 1:
 
 ```
-BenchmarkStage1Preprocessing/parking-citations-100K-48               134           8836499 ns/op        1498.24 MB/s
-BenchmarkStage1Preprocessing/worldcitiespop-100K-48                  434           2751225 ns/op        1802.24 MB/s
-BenchmarkStage1Preprocessing/nyc-taxi-data-100K-48                    49          22652981 ns/op        1464.42 MB/s
+BenchmarkStage1/parking-citations-100K-48               134           8836499 ns/op        1498.24 MB/s
+BenchmarkStage1/worldcitiespop-100K-48                  434           2751225 ns/op        1802.24 MB/s
+BenchmarkStage1/nyc-taxi-data-100K-48                    49          22652981 ns/op        1464.42 MB/s
 ```
 
 ## Stage 2: Parsing stage
 
-The second stage takes the (adjusted) bit masks from the first stage in order to work out the offsets of the individual fields into the originating buffer containing the CSV data.
+The second stage takes the (adjusted) bit masks from the first stage in order to work out the offsets of the individual fields into the buffer containing the CSV data.
 
-To prevent needlessy copying (and allocating) strings out of buffer of CSV data, there is a single large slice of strings representing all the columns for all the rows in the CSV data. Each string out of the columns slice points back at the appropriate starting position in the CSV data and has the corresponding length for that particular field.
+To prevent needlessy copying (and allocating) strings out of buffer of CSV data, there is a single large slice of strings representing all columns for all rows in the CSV data. Each string out of the columns slice points back at the appropriate starting position in the CSV data and has the corresponding length for that particular field.
 
-As the columns are parsed they are added to the same row (which is a slice of strings) until a delimiter in the form of an active bit in the newline mask is detected. Then a new row is started to which the subsequent fields are added.
+As the columns are parsed, they are added to the same row (slice of strings) until a delimiter in the form of an active bit in the newline mask is detected. Then a new row is started to which the subsequent fields will be added.
 
-Note that empty rows (whether subsequent or not) are automatically skipped. A carriage return character, immediately followed by a newline, is indicated from the first stage to be treated as a newline character. As such it properly terminates the current row while not adding an empty row to the parsed results.
+Note that empty rows are automatically eliminated. A carriage return character, immediately followed by a newline, is indicated from the first stage to be treated as a newline character. As such it properly terminates the current row while not adding an empty row to the parsed results.
 
 For the vast majority of the fields, there is an optimized "zero-copy" memory representation whereby the field is directly pointing back into the original buffer of CSV data. However there are some fields that require post-processing in order to have the correct representation (and meeting equivalence to how `encoding/csv` operates). 
 
@@ -78,9 +78,9 @@ These fields are all quoted fields that contain either a double quote (escaped q
 Detailed benchmarks for stage 2:
 
 ```
-BenchmarkStage2Parsing/parking-citations-100K-48                     100          10118645 ns/op        1308.40 MB/s
-BenchmarkStage2Parsing/worldcitiespop-100K-48                        314           3785415 ns/op        1309.86 MB/s
-BenchmarkStage2Parsing/nyc-taxi-data-100K-48                          44          26093220 ns/op        1271.34 MB/s
+BenchmarkStage2/parking-citations-100K-48               100          10118645 ns/op        1308.40 MB/s
+BenchmarkStage2/worldcitiespop-100K-48                  314           3785415 ns/op        1309.86 MB/s
+BenchmarkStage2/nyc-taxi-data-100K-48                    44          26093220 ns/op        1271.34 MB/s
 ```
 
 ## Example
@@ -244,9 +244,17 @@ func TestStage1PreprocessMasks(t *testing.T) {
 ## Limitations
 
 `simdcsv` has the following limitations:
-- Optimized for AVX2 on Intel and AMD only
+- Optimized for AVX2 on Intel and AMD
 - `LazyQuotes` is not supported (fallback to `encoding/csv`)
 - Non-ASCII characters for either Comma or Comment are not supported (fallback to `encoding/csv`)
+
+## License
+
+`simdcsv` is released under the Apache License v2.0. You can find the complete text in the file LICENSE.
+
+## Contributing
+
+Contributions are welcome, please send PRs for any enhancements.
 
 ## References
 
